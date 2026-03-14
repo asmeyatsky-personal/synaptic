@@ -5,6 +5,7 @@ Following skill2026.md Rule 2 - Interface-First Development.
 Adapters implement ports defined in domain layer.
 """
 
+import os
 import uuid
 import hashlib
 import jwt
@@ -22,8 +23,15 @@ from synaptic_bridge.domain.entities import (
 )
 
 
-SECRET_KEY = "synaptic-bridge-dev-key"
-DEFAULT_TTL = 900
+SECRET_KEY = os.environ.get("JWT_SECRET", "synaptic-bridge-change-me-in-production")
+DEFAULT_TTL_SECONDS = 900
+
+SESSION_ID_PREFIX = "session_"
+CORRECTION_ID_PREFIX = "corr_"
+PATTERN_ID_PREFIX = "pattern_"
+POLICY_ID_PREFIX = "policy_"
+TOOL_ID_PREFIX = "tool_"
+EVENT_ID_PREFIX = "audit_"
 
 
 class InMemoryExecutionAdapter:
@@ -46,7 +54,7 @@ class InMemoryExecutionAdapter:
             execution_token=token,
             status=SessionStatus.ACTIVE,
             started_at=datetime.now(UTC),
-            expires_at=datetime.now(UTC).timestamp() + DEFAULT_TTL,
+            expires_at=datetime.now(UTC).timestamp() + DEFAULT_TTL_SECONDS,
             tool_calls=(),
             created_by=created_by,
         )

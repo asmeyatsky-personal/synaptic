@@ -90,13 +90,33 @@ class ExecuteToolCommand:
             if policy.scope in (PolicyScope.TOOL, PolicyScope.SESSION):
                 allowed = await policy_engine.evaluate(policy, policy_context)
                 if not allowed:
-                    violation_id = f"viol_{uuid.uuid4().hex[:8]}"
-                    await audit_log.write(None)
+                    from synaptic_bridge.domain.entities import PolicyViolationEvent
+
+                    violation_event = PolicyViolationEvent(
+                        aggregate_id=f"viol_{uuid.uuid4().hex[:8]}",
+                        session_id=self.session_id,
+                        agent_id=session.agent_id,
+                        policy_id=policy.policy_id,
+                        tool_name=self.tool_name,
+                        reason=f"Policy {policy.name} denied execution",
+                    )
+                    await audit_log.write(violation_event)
                     raise PermissionError(f"Policy {policy.policy_id} denied execution")
 
         result = await execution_port.execute_tool(
             session, self.tool_name, self.parameters
         )
+
+        from synaptic_bridge.domain.events import ToolCalledEvent
+
+        tool_event = ToolCalledEvent(
+            aggregate_id=f"call_{uuid.uuid4().hex[:12]}",
+            session_id=self.session_id,
+            agent_id=session.agent_id,
+            tool_name=self.tool_name,
+            was_corrected=False,
+        )
+        await audit_log.write(tool_event)
 
         return result
 
