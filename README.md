@@ -1,5 +1,7 @@
 # SynapticBridge
 
+![SynapticBridge Architecture](synaptic.jpg)
+
 Autonomous, self-correcting MCP orchestration platform for AI agents with Correction Learning Engine (CLE).
 
 ## Overview
