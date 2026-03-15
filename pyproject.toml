@@ -25,7 +25,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-where = [".."]
+where = ["."]
 include = ["synaptic_bridge*"]
 
 [tool.pytest.ini_options]
