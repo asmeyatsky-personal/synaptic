@@ -21,7 +21,8 @@ class IntentClassifier:
     def __init__(self):
         self._vocabulary: dict[str, int] = {}
         self._tool_embeddings: dict[str, tuple[float, ...]] = {}
-        self._embedding_dim = 128
+        from synaptic_bridge.domain.constants import EMBEDDING_DIM
+        self._embedding_dim = EMBEDDING_DIM
         self._initialized = False
         self._init_default_tools()
 

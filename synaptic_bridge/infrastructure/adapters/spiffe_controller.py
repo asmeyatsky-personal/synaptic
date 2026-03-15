@@ -49,7 +49,7 @@ class SPIFFEController:
         self._cached_identity = identity
         return identity
 
-    def _is_identity_identity_valid(self, identity: WorkloadIdentity) -> bool:
+    def _is_identity_valid(self, identity: WorkloadIdentity) -> bool:
         """Check if cached identity is still valid."""
         current_time = int(time.time())
         return current_time < identity.expires_at - 300

@@ -97,7 +97,7 @@ def verify_partner_api_key(api_key: str = Header(...)) -> PartnerAPIKey:
 
 @app.post("/partners/tools", tags=["Partner Tools"])
 async def register_partner_tool(
-    tool: PartnerToolToolRegistration,
+    tool: PartnerToolRegistration,
     partner: PartnerAPIKey = Depends(verify_partner_api_key),
 ) -> dict:
     """Register a partner's tool for SynapticBridge."""

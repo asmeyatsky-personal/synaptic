@@ -28,19 +28,20 @@ class SynapticBridgeCLI:
         version: str,
         capabilities: list[str],
         scope: str,
-        ttl: int = 900,
+        ttl: int | None = None,
         network: bool = False,
         audit: str = "summary",
     ) -> dict:
         """Register a new tool manifest."""
         from synaptic_bridge.application.commands import RegisterToolCommand
+        from synaptic_bridge.domain.constants import DEFAULT_TTL_SECONDS
 
         command = RegisterToolCommand(
             tool_name=name,
             version=version,
             capabilities=capabilities,
             scope=scope,
-            ttl_seconds=ttl,
+            ttl_seconds=ttl if ttl is not None else DEFAULT_TTL_SECONDS,
             network_egress=network,
             audit_level=audit,
             signature="",
@@ -229,7 +230,7 @@ async def main():
         "--capabilities", nargs="+", required=True, help="Capabilities"
     )
     tool_parser.add_argument("--scope", required=True, help="Scope")
-    tool_parser.add_argument("--ttl", type=int, default=900, help="TTL in seconds")
+    tool_parser.add_argument("--ttl", type=int, default=None, help="TTL in seconds (default: 900)")
     tool_parser.add_argument("--network", action="store_true", help="Allow network")
     tool_parser.add_argument(
         "--audit", default="summary", choices=["none", "summary", "full"]

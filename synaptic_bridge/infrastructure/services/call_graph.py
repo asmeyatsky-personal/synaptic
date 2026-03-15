@@ -22,7 +22,7 @@ class CallNode:
     agent_id: str
     status: str
     started_at: str
-    completed_at: str | None
+    completed_at: str | None = None
     parameters: dict = field(default_factory=dict)
     result: Any = None
     error: str | None = None
@@ -89,7 +89,7 @@ class CallGraphService:
         )
         
         self._graphs[session_id]["nodes"].append(node_id)
-        self._graphs[session_id][node_id] = node)
+        self._graphs[session_id][node_id] = node
         
         if parent_node_id:
             edge = CallEdge(from_node=parent_node_id, to_node=node_id)

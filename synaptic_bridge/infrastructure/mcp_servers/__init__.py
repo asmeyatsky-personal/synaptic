@@ -77,11 +77,21 @@ class SessionMCPServer:
         policy_engine = self._container.resolve("policy_engine")
         audit_log = self._container.resolve("audit_log")
 
+        intent_classifier = None
+        correction_store = None
+        try:
+            intent_classifier = self._container.resolve("intent_classifier")
+            correction_store = self._container.resolve("correction_store")
+        except Exception:
+            pass
+
         result = await command.execute(
             execution_port,
             tool_registry,
             policy_engine,
             audit_log,
+            intent_classifier=intent_classifier,
+            correction_store=correction_store,
         )
 
         return result
@@ -215,7 +225,13 @@ class CLEMPServer:
 
         correction_store = self._container.resolve("correction_store")
 
-        correction = await command.execute(correction_store)
+        intent_classifier = None
+        try:
+            intent_classifier = self._container.resolve("intent_classifier")
+        except Exception:
+            pass
+
+        correction = await command.execute(correction_store, intent_classifier=intent_classifier)
 
         return {
             "correction_id": correction.correction_id,

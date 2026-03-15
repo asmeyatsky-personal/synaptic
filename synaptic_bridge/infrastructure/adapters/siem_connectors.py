@@ -8,7 +8,7 @@ import os
 import json
 import logging
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Any
 from dataclasses import dataclass
 
@@ -57,7 +57,7 @@ class SIEMConnector(ABC):
     def normalize_event(self, event: dict) -> SIEMEvent:
         """Normalize internal event to SIEM format."""
         return SIEMEvent(
-            timestamp=event.get("timestamp", datetime.utcnow().isoformat()),
+            timestamp=event.get("timestamp", datetime.now(UTC).isoformat()),
             event_type=event.get("event_type", "unknown"),
             source=event.get("actor", "unknown"),
             destination=event.get("resource", ""),
@@ -263,7 +263,7 @@ class SIEMDispatcher:
     def _normalize_event(self, event: dict) -> SIEMEvent:
         """Normalize event for SIEM."""
         return SIEMEvent(
-            timestamp=event.get("timestamp", datetime.utcnow().isoformat()),
+            timestamp=event.get("timestamp", datetime.now(UTC).isoformat()),
             event_type=event.get("event_type", "unknown"),
             source=event.get("actor", "system"),
             destination=event.get("resource", ""),

@@ -5,11 +5,16 @@ Following PRD: Open Policy Agent (OPA) integration with Rego expressiveness.
 Actual Rego policy evaluation for dispatch-time policy checks.
 """
 
+import fnmatch
 import json
+import logging
 import re
 from typing import Any
 
 from synaptic_bridge.domain.entities import Policy, PolicyEffect
+from synaptic_bridge.domain.exceptions import RegoEvaluationError
+
+logger = logging.getLogger("synaptic-bridge.opa")
 
 
 class OPAPolicyEngine:
@@ -64,7 +69,14 @@ class OPAPolicyEngine:
         try:
             result = self._evaluate_rego(policy.rego_code, context)
             return result if isinstance(result, bool) else bool(result)
+        except RegoEvaluationError:
+            raise
         except Exception as e:
+            logger.error(
+                "Rego evaluation failed for policy %s: %s",
+                policy.policy_id,
+                e,
+            )
             return False
 
     def _evaluate_rego(self, rego_code: str, context: dict) -> Any:
@@ -106,7 +118,7 @@ class OPAPolicyEngine:
         condition = condition.strip()
 
         if condition.startswith("input."):
-            path = condition[6:].strip()
+            path = condition.strip()
             return self._get_nested(input_data, path) is not None
 
         for builtin_name, builtin_fn in self._builtins.items():
@@ -123,7 +135,7 @@ class OPAPolicyEngine:
         current = data
 
         for key in keys:
-            if key not in current:
+            if not isinstance(current, dict) or key not in current:
                 return None
             current = current[key]
 
@@ -133,7 +145,7 @@ class OPAPolicyEngine:
         self, condition: str, input_data: dict, name: str, fn: callable
     ) -> bool:
         """Evaluate a built-in function."""
-        match = re.search(rf"{name}\(([^)]+)\)", condition)
+        match = re.search(rf"{re.escape(name)}\(([^)]+)\)", condition)
         if not match:
             return True
 
@@ -143,7 +155,7 @@ class OPAPolicyEngine:
         evaluated_args = []
         for arg in args:
             if arg.startswith("input."):
-                evaluated_args.append(self._get_nested(input_data, arg[6:]))
+                evaluated_args.append(self._get_nested(input_data, arg))
             elif arg.startswith('"') and arg.endswith('"'):
                 evaluated_args.append(arg[1:-1])
             else:
@@ -157,7 +169,8 @@ class OPAPolicyEngine:
 
         try:
             return fn(*evaluated_args)
-        except Exception:
+        except Exception as e:
+            logger.warning("Builtin %s evaluation failed: %s", name, e)
             return False
 
     def _builtin_eq(self, a: Any, b: Any) -> bool:
@@ -197,21 +210,20 @@ class OPAPolicyEngine:
         return s.endswith(suffix)
 
     def _builtin_glob_match(self, pattern: str, text: str) -> bool:
-        """Match text against a glob pattern."""
-        regex_pattern = pattern.replace(".", r"\.").replace("*", ".*").replace("?", ".")
-        return bool(re.match(f"^{regex_pattern}$", text))
+        """Match text against a glob pattern using fnmatch (safe from ReDoS)."""
+        return fnmatch.fnmatch(text, pattern)
 
 
 class BuiltInPolicies:
     """Pre-built policy templates following PRD: 5 built-in policy templates."""
 
     DENY_NETWORK = """package synapticbridge
-    
+
     deny {
         input.tool_name == "network.request"
         input.parameters.method != "GET"
     }
-    
+
     deny {
         input.tool_name == "http.request"
         input.parameters.url == ""
@@ -219,17 +231,17 @@ class BuiltInPolicies:
     """
 
     DENY_SENSITIVE = """package synapticbridge
-    
+
     deny {
         input.tool_name == "filesystem.read"
         contains(input.parameters.path, "/etc/passwd")
     }
-    
+
     deny {
         input.tool_name == "filesystem.read"
         contains(input.parameters.path, "/root/.ssh")
     }
-    
+
     deny {
         input.tool_name == "bash.execute"
         contains(input.parameters.command, "rm -rf")
@@ -237,7 +249,7 @@ class BuiltInPolicies:
     """
 
     RATE_LIMIT = """package synapticbridge
-    
+
     deny {
         input.tool_name == "api.request"
         input.rate_limit_exceeded == true
@@ -245,24 +257,24 @@ class BuiltInPolicies:
     """
 
     SESSION_TIMEOUT = """package synapticbridge
-    
+
     deny {
         input.session_age > 900
     }
     """
 
     ALLOW_LIST = """package synapticbridge
-    
+
     allow {
         input.tool_name == "filesystem.read"
         input.parameters.scope == "workspace:current"
     }
-    
+
     allow {
         input.tool_name == "bash.execute"
         input.parameters.timeout < 30
     }
-    
+
     deny {
         true
     }

@@ -4,7 +4,7 @@ Domain Events
 Following skill2026.md event-driven communication patterns.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime, UTC
 from typing import Any
 
@@ -17,6 +17,15 @@ class DomainEvent:
     @property
     def event_type(self) -> str:
         return self.__class__.__name__
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for f in fields(self):
+            val = getattr(self, f.name)
+            if isinstance(val, datetime):
+                val = val.isoformat()
+            result[f.name] = val
+        return result
 
 
 @dataclass(frozen=True)
@@ -75,3 +84,13 @@ class DriftDetectedEvent(DomainEvent):
     expected_behavior: str = ""
     observed_behavior: str = ""
     drift_score: float = 0.0
+
+
+@dataclass(frozen=True)
+class CLEInterceptionEvent(DomainEvent):
+    original_tool: str = ""
+    suggested_tool: str = ""
+    confidence: float = 0.0
+    pattern_id: str = ""
+    shadow_mode: bool = True
+    applied: bool = False

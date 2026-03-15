@@ -12,6 +12,7 @@ from typing import Any
 
 import duckdb
 
+from synaptic_bridge.domain.constants import EMBEDDING_DIM, PATTERN_SIMILARITY_THRESHOLD
 from synaptic_bridge.domain.entities import Correction, CorrectionPattern
 
 
@@ -68,24 +69,26 @@ class DuckDBCorrectionStore:
         """)
 
         self._conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_corrections_session 
+            CREATE INDEX IF NOT EXISTS idx_corrections_session
             ON corrections(session_id);
         """)
 
         self._conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_corrections_agent 
+            CREATE INDEX IF NOT EXISTS idx_corrections_agent
             ON corrections(agent_id);
         """)
 
         self._conn.commit()
 
-    async def save_correction(self, correction: Correction) -> None:
+    async def save_correction(
+        self, correction: Correction, *, intent_embedding: tuple[float, ...] | None = None
+    ) -> None:
         """Save a correction to DuckDB."""
         metadata_json = json.dumps(correction.correction_metadata)
 
         self._conn.execute(
             """
-            INSERT INTO corrections 
+            INSERT INTO corrections
             (correction_id, session_id, agent_id, original_intent, inferred_context,
              original_tool, corrected_tool, correction_metadata, operator_identity,
              confidence_before, confidence_after, captured_at)
@@ -109,22 +112,24 @@ class DuckDBCorrectionStore:
 
         self._conn.commit()
 
-        await self._update_pattern_from_correction(correction)
+        await self._update_pattern_from_correction(correction, intent_embedding=intent_embedding)
 
-    async def _update_pattern_from_correction(self, correction: Correction) -> None:
+    async def _update_pattern_from_correction(
+        self, correction: Correction, *, intent_embedding: tuple[float, ...] | None = None
+    ) -> None:
         """Update or create a pattern based on the correction."""
-        pattern_key = (correction.original_tool, correction.corrected_tool)
+        vector = list(intent_embedding) if intent_embedding is not None else [0.0] * EMBEDDING_DIM
 
         existing = self._conn.execute(
             """
             SELECT pattern_id, occurrence_count, avg_confidence_improvement
             FROM correction_patterns
-            WHERE original_tools::JSON @> ?::JSON
-            AND corrected_tools::JSON @> ?::JSON
+            WHERE list_contains(from_json_strict(original_tools, '["VARCHAR"]'), ?)
+            AND list_contains(from_json_strict(corrected_tools, '["VARCHAR"]'), ?)
         """,
             [
-                json.dumps([correction.original_tool]),
-                json.dumps([correction.corrected_tool]),
+                correction.original_tool,
+                correction.corrected_tool,
             ],
         ).fetchone()
 
@@ -140,10 +145,11 @@ class DuckDBCorrectionStore:
                 UPDATE correction_patterns
                 SET occurrence_count = ?,
                     avg_confidence_improvement = ?,
+                    intent_vector = ?,
                     last_updated = ?
                 WHERE pattern_id = ?
             """,
-                [new_count, new_avg, datetime.now(UTC), pattern_id],
+                [new_count, new_avg, json.dumps(vector), datetime.now(UTC), pattern_id],
             )
         else:
             pattern_id = f"pattern_{uuid.uuid4().hex[:8]}"
@@ -157,7 +163,7 @@ class DuckDBCorrectionStore:
             """,
                 [
                     pattern_id,
-                    json.dumps([0.0] * 128),
+                    json.dumps(vector),
                     json.dumps([correction.original_tool]),
                     json.dumps([correction.corrected_tool]),
                     1,
@@ -196,10 +202,10 @@ class DuckDBCorrectionStore:
         for row in rows:
             pattern = self._row_to_pattern(row)
 
-            stored_vector = json.loads(pattern.intent_vector)
-            similarity = self._cosine_similarity(intent_vector, tuple(stored_vector))
+            stored_vector = pattern.intent_vector
+            similarity = self._cosine_similarity(intent_vector, stored_vector)
 
-            if similarity > 0.3:
+            if similarity > PATTERN_SIMILARITY_THRESHOLD:
                 patterns.append(pattern)
 
         return patterns

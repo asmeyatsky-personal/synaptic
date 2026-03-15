@@ -4,14 +4,32 @@ SynapticBridge Presentation Layer - FastAPI
 REST API for SynapticBridge MCP orchestration platform.
 """
 
+import logging
 import os
 import uuid
-from fastapi import FastAPI, HTTPException, Header, Depends
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException, Header, Depends, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from typing import Any, Optional
 from typing_extensions import Annotated
 
+from synaptic_bridge.domain.constants import (
+    API_VERSION,
+    DEFAULT_TTL_SECONDS,
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+)
+from synaptic_bridge.domain.exceptions import (
+    ConfigurationError,
+    PolicyViolationError,
+    SessionNotFoundError,
+    SessionExpiredError,
+    ToolNotFoundError,
+    SynapticBridgeError,
+)
 from synaptic_bridge.infrastructure.config import create_container
 from synaptic_bridge.infrastructure.mcp_servers import (
     SessionMCPServer,
@@ -20,13 +38,89 @@ from synaptic_bridge.infrastructure.mcp_servers import (
     PolicyMCPServer,
 )
 
+logger = logging.getLogger("synaptic-bridge.api")
+
+
+def _get_secret_key() -> str:
+    """Get JWT secret key, failing fast if not configured."""
+    key = os.environ.get("JWT_SECRET")
+    if not key:
+        raise ConfigurationError(
+            "JWT_SECRET environment variable is required. "
+            "Set it to a cryptographically strong random value."
+        )
+    return key
+
+
+# Lazy-loaded secret key (validated on first use)
+_secret_key: str | None = None
+
+
+def get_secret_key() -> str:
+    global _secret_key
+    if _secret_key is None:
+        # Allow unset in test environments
+        _secret_key = os.environ.get("JWT_SECRET", "")
+        if not _secret_key and os.environ.get("TESTING") != "1":
+            raise ConfigurationError(
+                "JWT_SECRET environment variable is required. "
+                "Set it to a cryptographically strong random value."
+            )
+    return _secret_key
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan: startup and shutdown."""
+    logger.info("SynapticBridge API starting up")
+    yield
+    logger.info("SynapticBridge API shutting down")
+    # Close DuckDB connections if present
+    try:
+        store = container.resolve("correction_store")
+        if hasattr(store, "close"):
+            store.close()
+    except Exception:
+        pass
+
+
 app = FastAPI(
     title="SynapticBridge API",
-    version="1.0.0",
+    version=API_VERSION,
     description="MCP Orchestration Platform with Correction Learning Engine",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
+
+# CORS middleware
+allowed_origins = os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",")
+allowed_origins = [o.strip() for o in allowed_origins if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins or [],
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
+    max_age=3600,
+)
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Add security headers to all responses."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Cache-Control"] = "no-store"
+    if os.environ.get("ENFORCE_HTTPS"):
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+    return response
+
 
 container = create_container()
 
@@ -34,9 +128,6 @@ session_server = SessionMCPServer(container)
 tool_server = ToolMCPServer(container)
 cle_server = CLEMPServer(container)
 policy_server = PolicyMCPServer(container)
-
-
-SECRET_KEY = os.environ.get("JWT_SECRET", "synaptic-bridge-change-me-in-production")
 
 
 async def verify_token(authorization: Annotated[str, Header()]) -> str:
@@ -48,7 +139,8 @@ async def verify_token(authorization: Annotated[str, Header()]) -> str:
 
     token = authorization[7:]
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        secret = get_secret_key()
+        payload = jwt.decode(token, secret, algorithms=["HS256"])
         session_id = payload.get("session_id")
         if not session_id:
             raise HTTPException(
@@ -92,7 +184,7 @@ class RegisterToolRequest(BaseModel):
     version: str = Field(..., pattern=r"^\d+\.\d+\.\d+$")
     capabilities: list[str] = Field(..., min_length=1)
     scope: str = Field(..., min_length=1, max_length=200)
-    ttl_seconds: int = Field(default=900, ge=60, le=86400)
+    ttl_seconds: int = Field(default=DEFAULT_TTL_SECONDS, ge=60, le=86400)
     network_egress: bool = Field(default=False)
     audit_level: str = Field(default="summary", pattern="^(none|summary|full)$")
     signature: str = Field(default="")
@@ -133,7 +225,7 @@ class AddPolicyRequest(BaseModel):
 async def root():
     return {
         "name": "SynapticBridge",
-        "version": "1.0.0",
+        "version": API_VERSION,
         "description": "MCP Orchestration Platform with Correction Learning Engine",
     }
 
@@ -141,7 +233,7 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "service": "synaptic-bridge", "version": "1.0.0"}
+    return {"status": "healthy", "service": "synaptic-bridge", "version": API_VERSION}
 
 
 @app.post("/sessions")
@@ -156,7 +248,8 @@ async def create_session(request: CreateSessionRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.exception("Failed to create session")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/execute")
@@ -178,17 +271,25 @@ async def execute_tool(
             intent=request.intent,
         )
         return result
-    except PermissionError as e:
+    except PolicyViolationError as e:
         raise HTTPException(status_code=403, detail=str(e))
-    except ValueError as e:
+    except (SessionNotFoundError, ToolNotFoundError) as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except SessionExpiredError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except (PermissionError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.exception("Failed to execute tool")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/sessions/{session_id}")
-async def get_session(session_id: str):
-    """Get session by ID."""
+async def get_session(
+    session_id: str,
+    _session_id_from_token: str = Depends(verify_token),
+):
+    """Get session by ID. Requires authentication."""
     result = await session_server.get_session(session_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -196,8 +297,11 @@ async def get_session(session_id: str):
 
 
 @app.post("/tools")
-async def register_tool(request: RegisterToolRequest):
-    """Register a new tool manifest."""
+async def register_tool(
+    request: RegisterToolRequest,
+    _session_id_from_token: str = Depends(verify_token),
+):
+    """Register a new tool manifest. Requires authentication."""
     try:
         result = await tool_server.register_tool(
             tool_name=request.tool_name,
@@ -213,18 +317,26 @@ async def register_tool(request: RegisterToolRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.exception("Failed to register tool")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/tools")
-async def list_tools():
-    """List all registered tools."""
-    return await tool_server.list_tools()
+async def list_tools(
+    limit: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    offset: int = Query(default=0, ge=0),
+):
+    """List all registered tools with pagination."""
+    tools = await tool_server.list_tools()
+    return {"items": tools[offset : offset + limit], "total": len(tools)}
 
 
 @app.post("/corrections")
-async def capture_correction(request: CaptureCorrectionRequest):
-    """Capture a human override/correction."""
+async def capture_correction(
+    request: CaptureCorrectionRequest,
+    _session_id_from_token: str = Depends(verify_token),
+):
+    """Capture a human override/correction. Requires authentication."""
     try:
         result = await cle_server.capture_correction(
             session_id=request.session_id,
@@ -242,12 +354,16 @@ async def capture_correction(request: CaptureCorrectionRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.exception("Failed to capture correction")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/policies")
-async def add_policy(request: AddPolicyRequest):
-    """Add a new OPA policy."""
+async def add_policy(
+    request: AddPolicyRequest,
+    _session_id_from_token: str = Depends(verify_token),
+):
+    """Add a new OPA policy. Requires authentication."""
     try:
         result = await policy_server.add_policy(
             name=request.name,
@@ -261,22 +377,25 @@ async def add_policy(request: AddPolicyRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.exception("Failed to add policy")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/policies")
-async def list_policies():
-    """List all policies."""
-    return await policy_server.list_policies()
+async def list_policies(
+    limit: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    offset: int = Query(default=0, ge=0),
+):
+    """List all policies with pagination."""
+    policies = await policy_server.list_policies()
+    return {"items": policies[offset : offset + limit], "total": len(policies)}
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
+async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler for unhandled errors."""
+    logger.exception("Unhandled exception")
     return JSONResponse(
         status_code=500,
-        content={
-            "detail": "Internal server error",
-            "path": str(request.url),
-        },
+        content={"detail": "Internal server error"},
     )

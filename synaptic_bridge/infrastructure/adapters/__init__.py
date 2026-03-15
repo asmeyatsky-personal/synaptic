@@ -9,9 +9,15 @@ import os
 import uuid
 import hashlib
 import jwt
+from dataclasses import replace
 from datetime import datetime, UTC
 from typing import Any
 
+from synaptic_bridge.domain.constants import (
+    DEFAULT_TTL_SECONDS,
+    EMBEDDING_DIM,
+)
+from synaptic_bridge.domain.exceptions import ConfigurationError
 from synaptic_bridge.domain.entities import (
     ExecutionSession,
     SessionStatus,
@@ -23,15 +29,14 @@ from synaptic_bridge.domain.entities import (
 )
 
 
-SECRET_KEY = os.environ.get("JWT_SECRET", "synaptic-bridge-change-me-in-production")
-DEFAULT_TTL_SECONDS = 900
-
-SESSION_ID_PREFIX = "session_"
-CORRECTION_ID_PREFIX = "corr_"
-PATTERN_ID_PREFIX = "pattern_"
-POLICY_ID_PREFIX = "policy_"
-TOOL_ID_PREFIX = "tool_"
-EVENT_ID_PREFIX = "audit_"
+def _get_jwt_secret() -> str:
+    """Get JWT secret, failing fast if not configured outside tests."""
+    secret = os.environ.get("JWT_SECRET", "")
+    if not secret and os.environ.get("TESTING") != "1":
+        raise ConfigurationError(
+            "JWT_SECRET environment variable is required."
+        )
+    return secret
 
 
 class InMemoryExecutionAdapter:
@@ -42,9 +47,10 @@ class InMemoryExecutionAdapter:
 
     async def create_session(self, agent_id: str, created_by: str) -> ExecutionSession:
         session_id = f"session_{uuid.uuid4().hex[:12]}"
+        secret = _get_jwt_secret()
         token = jwt.encode(
             {"session_id": session_id, "agent_id": agent_id},
-            SECRET_KEY,
+            secret,
             algorithm="HS256",
         )
 
@@ -72,7 +78,8 @@ class InMemoryExecutionAdapter:
 
     async def validate_token(self, token: str) -> bool:
         try:
-            payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+            secret = _get_jwt_secret()
+            payload = jwt.decode(token, secret, algorithms=["HS256"])
             session = await self.get_session(payload["session_id"])
             return session is not None and session.is_active()
         except jwt.InvalidTokenError:
@@ -115,20 +122,27 @@ class InMemoryCorrectionStore:
         self._corrections: dict[str, Correction] = {}
         self._patterns: dict[str, CorrectionPattern] = {}
 
-    async def save_correction(self, correction: Correction) -> None:
+    async def save_correction(
+        self, correction: Correction, *, intent_embedding: tuple[float, ...] | None = None
+    ) -> None:
         self._corrections[correction.correction_id] = correction
+
+        vector = intent_embedding if intent_embedding is not None else tuple([0.0] * EMBEDDING_DIM)
 
         pattern_key = tuple(sorted([correction.corrected_tool]))
 
         if pattern_key in self._patterns:
             existing = self._patterns[pattern_key]
-            self._patterns[pattern_key] = existing.with_increment(
+            updated = existing.with_increment(
                 correction.confidence_after - correction.confidence_before
             )
+            if intent_embedding is not None:
+                updated = replace(updated, intent_vector=intent_embedding)
+            self._patterns[pattern_key] = updated
         else:
             self._patterns[pattern_key] = CorrectionPattern(
                 pattern_id=f"pattern_{uuid.uuid4().hex[:8]}",
-                intent_vector=tuple([0.0] * 128),
+                intent_vector=vector,
                 original_tools=(correction.original_tool,),
                 corrected_tools=(correction.corrected_tool,),
                 occurrence_count=1,
@@ -244,7 +258,7 @@ class MockIntentClassifier:
         import random
 
         random.seed(hash(text) % (2**32))
-        return tuple(random.random() for _ in range(128))
+        return tuple(random.random() for _ in range(EMBEDDING_DIM))
 
     async def match_tool(self, embedding: tuple[float, ...]) -> tuple[str, float]:
         return "filesystem.read", 0.85

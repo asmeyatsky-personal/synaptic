@@ -97,7 +97,7 @@ class CLEPredictiveDispatchWorkflow:
         intent: str,
         original_tool: str,
         parameters: dict,
-        confidence_threshold: float = 0.7,
+        confidence_threshold: float | None = None,
         intent_classifier: Any = None,
         correction_store: Any = None,
         execution_port: Any = None,
@@ -105,7 +105,8 @@ class CLEPredictiveDispatchWorkflow:
         self.intent = intent
         self.original_tool = original_tool
         self.parameters = parameters
-        self.confidence_threshold = confidence_threshold
+        from synaptic_bridge.domain.constants import CLE_CONFIDENCE_THRESHOLD
+        self.confidence_threshold = confidence_threshold if confidence_threshold is not None else CLE_CONFIDENCE_THRESHOLD
         self.intent_classifier = intent_classifier
         self.correction_store = correction_store
         self.execution_port = execution_port

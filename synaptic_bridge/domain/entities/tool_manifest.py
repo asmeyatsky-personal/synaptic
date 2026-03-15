@@ -69,14 +69,3 @@ network_egress = {str(self.network_egress).lower()}
 audit_level = "{self.audit_level.value}"
 signature = "{self.signature}"
 '''
-
-    def to_toml(self) -> str:
-        caps = ", ".join(f'"{c.value}"' for c in self.capabilities)
-        return f'''[{self.tool_name}]
-capabilities = [{caps}]
-scope = "{self.scope}"
-ttl_seconds = {self.ttl_seconds}
-network_egress = {str(self.network_egress).lower()}
-audit_level = "{self.audit_level.value}"
-signature = "{self.signature}"
-'''

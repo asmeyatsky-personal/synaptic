@@ -6,9 +6,11 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - JWT_SECRET=${JWT_SECRET:-synaptic-bridge-change-me}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
+      - WORM_SECRET_KEY=${WORM_SECRET_KEY:?WORM_SECRET_KEY is required}
       - DUCKDB_PATH=/data/synaptic_bridge.duckdb
       - SPIRE_SOCKET_PATH=/tmp/spire-agent.sock
+      - ENFORCE_HTTPS=1
     volumes:
       - ./data:/data
       - /var/run/spire:/var/run/spire:ro
@@ -18,13 +20,30 @@ services:
       timeout: 10s
       retries: 3
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    networks:
+      - synaptic-internal
+    read_only: true
+    tmpfs:
+      - /tmp
 
   cli:
     build: .
     volumes:
       - ./data:/data
+    environment:
+      - DUCKDB_PATH=/data/synaptic_bridge.duckdb
     command: ["python", "-m", "synaptic_bridge.presentation.cli.main"]
+    networks:
+      - synaptic-internal
 
 networks:
-  default:
-    name: synaptic-network
+  synaptic-internal:
+    driver: bridge

@@ -9,13 +9,17 @@ import os
 import json
 import hashlib
 import hmac
-import time
+import stat
+import logging
 from datetime import datetime, UTC
 from typing import Any
 from dataclasses import dataclass, asdict
 from enum import Enum
 
 from synaptic_bridge.domain.entities import AuditEvent
+from synaptic_bridge.domain.exceptions import ConfigurationError, AuditIntegrityError
+
+logger = logging.getLogger("synaptic-bridge.worm")
 
 
 class WORMStorageBackend(Enum):
@@ -57,20 +61,24 @@ class WORMAuditLog:
 
     def __init__(
         self,
-        storage_path: str = "/var/lib/synaptic-bridge/audit",
+        storage_path: str | None = None,
         backend: WORMStorageBackend = WORMStorageBackend.LOCAL,
         secret_key: str | None = None,
     ):
-        self.storage_path = storage_path
-        self.backend = backend
-        self.secret_key = secret_key or os.environ.get(
-            "WORM_SECRET_KEY", "default-secret"
+        self.storage_path = storage_path or os.environ.get(
+            "WORM_STORAGE_PATH", "/var/lib/synaptic-bridge/audit"
         )
+        self.backend = backend
+        self.secret_key = secret_key or os.environ.get("WORM_SECRET_KEY", "")
+        if not self.secret_key:
+            raise ConfigurationError(
+                "WORM_SECRET_KEY environment variable or secret_key parameter is required."
+            )
         self._sequence = 0
         self._previous_hash = "0" * 64
         self._events: list[WORMEvent] = []
 
-        os.makedirs(storage_path, exist_ok=True)
+        os.makedirs(self.storage_path, mode=0o700, exist_ok=True)
         self._load_sequence()
 
     def _load_sequence(self) -> None:
@@ -90,12 +98,14 @@ class WORMAuditLog:
         seq_file = os.path.join(self.storage_path, ".sequence")
         with open(seq_file, "w") as f:
             f.write(str(self._sequence))
+        os.chmod(seq_file, stat.S_IRUSR | stat.S_IWUSR)
 
     def _save_last_hash(self, hash_value: str) -> None:
         """Save the last event hash."""
         last_event_file = os.path.join(self.storage_path, ".last_hash")
         with open(last_event_file, "w") as f:
             f.write(hash_value)
+        os.chmod(last_event_file, stat.S_IRUSR | stat.S_IWUSR)
 
     async def append(self, event: AuditEvent) -> WORMEvent:
         """Append an event to the WORM log."""
@@ -165,20 +175,23 @@ class WORMAuditLog:
             await self._write_s3(event)
 
     async def _write_local(self, event: WORMEvent) -> None:
-        """Write to local filesystem."""
+        """Write to local filesystem with restricted permissions."""
         filename = f"{event.sequence_number:012d}_{event.event_id}.json"
         filepath = os.path.join(self.storage_path, filename)
 
         with open(filepath, "w") as f:
             json.dump(event.to_dict(), f, indent=2)
 
+        # Make audit event read-only after writing
+        os.chmod(filepath, stat.S_IRUSR)
+
     async def _write_gcs(self, event: WORMEvent) -> None:
         """Write to Google Cloud Storage (WORM)."""
-        pass
+        logger.warning("GCS backend not yet implemented, event stored in memory only")
 
     async def _write_s3(self, event: WORMEvent) -> None:
         """Write to AWS S3 (WORM with bucket policy)."""
-        pass
+        logger.warning("S3 backend not yet implemented, event stored in memory only")
 
     async def verify_integrity(self) -> dict:
         """Verify the integrity of the entire audit log."""
