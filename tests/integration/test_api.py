@@ -6,19 +6,24 @@ End-to-end tests for SynapticBridge API.
 
 import os
 
+import jwt
 import pytest
 
 os.environ["TESTING"] = "1"
 
 from httpx import ASGITransport, AsyncClient
 
-from synaptic_bridge.presentation.api.main import app
+from synaptic_bridge.presentation.api.main import app, get_secret_key
 
 
 def _make_auth_header(session_id: str = "test-session") -> dict:
     """Create a valid JWT auth header for testing."""
-    import jwt
-    from synaptic_bridge.presentation.api.main import get_secret_key
+    token = jwt.encode(
+        {"session_id": session_id, "agent_id": "test-agent"},
+        get_secret_key(),
+        algorithm="HS256",
+    )
+    return {"Authorization": f"Bearer {token}"}
 
     token = jwt.encode(
         {"session_id": session_id, "agent_id": "test-agent"},
