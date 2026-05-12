@@ -15,13 +15,14 @@ SynapticBridge is an enterprise-grade platform for deploying AI agents at scale 
 
 ## Features
 
-- 🔒 **Zero-Trust Security** - SPIFFE/SPIRE workload identity, no env credentials, JWT with minimum key length validation
-- 📊 **Real-time Observability** - Call graph visualization, drift detection, Prometheus metrics endpoint
+- 🔒 **Zero-Trust Security** - SPIFFE/SPIRE workload identity, Secret Manager + Workload Identity for credentials, JWT with minimum key length validation
+- 📊 **Real-time Observability** - OpenTelemetry tracing, RED metrics, structured per-AI-call logs (model, tokens, latency, cost — PII-safe), call graph visualization, drift detection
 - 🔄 **CLE Predictive Dispatch** - 70% reduction in human interruptions, with pattern decay (30-day half-life)
-- 🌐 **SIEM Integration** - Splunk, Datadog, GCP, Azure Sentinel with circuit breakers
+- 🌐 **SIEM Integration** - Splunk, Datadog, GCP, Azure Sentinel with explicit timeouts and per-vendor circuit breakers
 - 📦 **MCP Native** - Works with Claude Code, any MCP-compatible agent
 - ⚡ **Production Hardened** - Rate limiting, circuit breakers, graceful shutdown, request size limits
 - 🏥 **Health Checks** - `/health`, `/health/live`, `/health/ready` for Kubernetes probes
+- 🧱 **Architecturally Enforced** - Layer boundaries, coverage thresholds, lockfile, SBOM, and Secret Manager use are all blocked at CI per [Architectural Rules — 2026](./Architectural%20Rules%20%E2%80%94%202026.md)
 
 ## Quick Start
 
@@ -167,42 +168,56 @@ python -m synaptic_bridge.presentation.cli.main query-logs --session session_xxx
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `JWT_SECRET` | JWT signing secret (min 32 bytes) | (required in prod) |
+| `JWT_SECRET` | JWT signing secret (min 32 bytes). In production, resolved via Secret Manager. | (required in prod) |
+| `GCP_PROJECT` | When set (and `TESTING != 1`), secrets resolve via GCP Secret Manager + Workload Identity. | (unset → env fallback) |
+| `OTEL_SERVICE_NAME` | OpenTelemetry service name | `synaptic-bridge` |
 | `ENVIRONMENT` | Set to `production` for prod mode | development |
 | `DUCKDB_PATH` | DuckDB database path | `synaptic_bridge.duckdb` |
 | `SPIRE_SOCKET_PATH` | SPIRE agent socket | `/tmp/spire-agent.sock` |
 | `SPLUNK_ENDPOINT` | Splunk HEC endpoint | - |
 | `DATADOG_API_KEY` | Datadog API key | - |
-| `GCP_PROJECT_ID` | GCP project ID | - |
+| `GCP_PROJECT_ID` | GCP project ID for logging | - |
+| `SIEM_SEND_TIMEOUT_SECONDS` | Per-vendor SIEM send timeout | `5.0` |
 | `MAX_REQUEST_SIZE_BYTES` | Max request body size | `1048576` (1MB) |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated CORS origins | (none) |
 | `ENFORCE_HTTPS` | Enable HSTS header | false |
 
-## Testing
+## Testing & Architectural Enforcement
 
 ```bash
-# Unit tests
-pytest tests/domain/ -v
+# Full test suite with coverage gate (overall ≥80%)
+TESTING=1 pytest
 
-# Application tests
-pytest tests/application/ -v
+# Per-layer gates (used in CI)
+TESTING=1 pytest tests/domain      -o addopts="" --cov=synaptic_bridge.domain      --cov-fail-under=95
+TESTING=1 pytest tests/application -o addopts="" --cov=synaptic_bridge.application --cov-fail-under=85
 
-# All tests with coverage
-pytest --cov=synaptic_bridge
+# Verify layer boundaries (domain imports no SDKs, application no infra, etc.)
+lint-imports
+
+# Verify dependency lockfile is up-to-date
+pip-compile --quiet --output-file /tmp/req.new pyproject.toml && diff requirements.lock /tmp/req.new
+
+# Generate a CycloneDX SBOM
+cyclonedx-py environment --output-format json --output-file sbom.cdx.json
 ```
+
+All of the above run on every PR via [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+Architecture decisions are recorded under [`docs/decisions/`](docs/decisions/).
 
 ## Project Stats
 
-| Metric | Value |
-|--------|-------|
-| Source code (Python) | ~6,500 LOC across 45+ modules |
-| Test code | ~4,000 LOC across test suites |
-| Test cases | 92 passing (domain + application) |
-| Test coverage | 72% overall, 90%+ on core domain & infrastructure |
-| Domain layer coverage | 100% (entities, events, ports, exceptions) |
-| CLE engine coverage | 99% (DuckDB store), 93% (intent classifier) |
-| Security layer coverage | 90% (WORM audit), 87% (SPIFFE identity) |
-| Zero dependencies at domain layer | Pure Python, no framework coupling |
+| Metric | Value | CI gate |
+|--------|-------|---------|
+| Source code (Python) | ~7,500 LOC across 50+ modules | — |
+| Test cases | 248 passing | — |
+| Overall coverage | 84% | ≥80% (blocks merge) |
+| Domain coverage | 99% | ≥95% (blocks merge) |
+| Application coverage | 99% | ≥85% (blocks merge) |
+| Architectural boundaries | 3 contracts, 0 violations | `lint-imports` (blocks merge) |
+| Dependency lockfile | `requirements.lock` (pip-compile) | drift fails CI |
+| SBOM | CycloneDX, emitted per build | uploaded as artifact |
+| Zero SDK imports in domain | Verified by import-linter contract | blocks merge |
 
 ### What's Tested
 
