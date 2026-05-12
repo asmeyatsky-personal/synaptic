@@ -84,21 +84,41 @@ class TestExecutionSession:
         assert session.is_active()
 
     def test_session_expiration(self):
+        from datetime import timedelta
+
         from synaptic_bridge.domain.entities import ExecutionSession, SessionStatus
 
+        now = datetime.now(UTC)
+        # Session that started in the distant past and has already expired.
         session = ExecutionSession(
             session_id="expired_session",
             agent_id="agent_1",
             execution_token="token123",
             status=SessionStatus.ACTIVE,
-            started_at=datetime.now(UTC),
-            expires_at=datetime.now(UTC).timestamp() - 100,
+            started_at=now - timedelta(seconds=200),
+            expires_at=(now - timedelta(seconds=100)).timestamp(),
             tool_calls=(),
             created_by="system",
         )
 
         assert session.is_expired()
         assert not session.is_active()
+
+    def test_session_invariant_rejects_expiry_before_start(self):
+        from synaptic_bridge.domain.entities import ExecutionSession, SessionStatus
+
+        now = datetime.now(UTC)
+        with pytest.raises(ValueError, match="Expiration must be after start"):
+            ExecutionSession(
+                session_id="bad",
+                agent_id="agent_1",
+                execution_token="t",
+                status=SessionStatus.ACTIVE,
+                started_at=now,
+                expires_at=now.timestamp() - 10,
+                tool_calls=(),
+                created_by="system",
+            )
 
 
 class TestCorrection:

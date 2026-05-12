@@ -6,13 +6,15 @@ build-backend = "setuptools.build_meta"
 name = "synaptic-bridge"
 version = "1.0.0"
 description = "SynapticBridge MCP Orchestration Platform with Correction Learning Engine"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.100.0,<1.0.0",
     "uvicorn>=0.23.0,<1.0.0",
     "pydantic>=2.0.0,<3.0.0",
     "pyjwt>=2.8.0,<3.0.0",
     "duckdb>=0.9.0,<2.0.0",
+    "opentelemetry-api>=1.20.0,<2.0.0",
+    "opentelemetry-sdk>=1.20.0,<2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +24,12 @@ dev = [
     "pytest-cov>=4.0.0,<6.0.0",
     "httpx>=0.24.0,<1.0.0",
     "ruff>=0.1.0",
+    "import-linter>=2.0,<3.0",
+    "pip-tools>=7.0,<8.0",
+    "cyclonedx-bom>=4.0,<6.0",
+]
+gcp = [
+    "google-cloud-secret-manager>=2.16.0,<3.0.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -32,9 +40,29 @@ include = ["synaptic_bridge*"]
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 python_files = "test_*.py"
+addopts = "--cov=synaptic_bridge --cov-report=term-missing --cov-fail-under=80"
+
+[tool.coverage.run]
+source = ["synaptic_bridge"]
+omit = [
+    "*/__pycache__/*",
+    "*/.ruff_cache/*",
+    "synaptic_bridge/presentation/portal/*",
+    "synaptic_bridge/presentation/cli/*",
+    "synaptic_bridge/presentation/api/partner_api.py",
+    "synaptic_bridge/infrastructure/mcp_servers/claude_code.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]

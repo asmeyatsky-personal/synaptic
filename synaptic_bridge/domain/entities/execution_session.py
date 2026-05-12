@@ -1,18 +1,18 @@
 """
-Execution Session Entity
+Layer: domain
+Ports: none
+MCP integration: consumed by application use cases; not exposed directly.
+Stack: canonical (Python).
 
-Represents a short-lived agent session with execution token.
-Following PRD: Each agent session receives a short-lived execution token
-(JWT, 15-minute default TTL).
-
-Immutable domain model following skill2026.md Rule 3.
+Execution Session aggregate. Short-lived agent session with execution token.
+Immutable per Architectural Rules §3.3.
 """
 
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum
 
-from ...domain.events import DomainEvent
+from ..events import DomainEvent, SessionEndedEvent
 
 
 class SessionStatus(Enum):
@@ -20,6 +20,14 @@ class SessionStatus(Enum):
     ACTIVE = "active"
     EXPIRED = "expired"
     TERMINATED = "terminated"
+
+
+def _to_datetime(value: datetime | int | float) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), UTC)
+    raise TypeError(f"Unsupported datetime value: {type(value).__name__}")
 
 
 @dataclass(frozen=True)
@@ -34,27 +42,20 @@ class ExecutionSession:
     created_by: str
     domain_events: tuple[DomainEvent, ...] = field(default=())
 
-    def __post_init__(self):
-        if isinstance(self.expires_at, (int, float)):
-            pass
-        elif self.expires_at <= self.started_at:
+    def __post_init__(self) -> None:
+        expires = _to_datetime(self.expires_at)
+        started = _to_datetime(self.started_at)
+        if expires <= started:
             raise ValueError("Expiration must be after start")
 
     def is_expired(self) -> bool:
-        if isinstance(self.expires_at, (int, float)):
-            exp_time = datetime.fromtimestamp(self.expires_at, UTC)
-        else:
-            exp_time = self.expires_at
-        return datetime.now(UTC) >= exp_time
+        return datetime.now(UTC) >= _to_datetime(self.expires_at)
 
     def is_active(self) -> bool:
         return self.status == SessionStatus.ACTIVE and not self.is_expired()
 
     def add_tool_call(self, tool_call_id: str) -> "ExecutionSession":
-        return replace(
-            self,
-            tool_calls=self.tool_calls + (tool_call_id,),
-        )
+        return replace(self, tool_calls=self.tool_calls + (tool_call_id,))
 
     def terminate(self) -> "ExecutionSession":
         return replace(
@@ -85,6 +86,3 @@ class ExecutionSession:
                 ),
             ),
         )
-
-
-from ...domain.events import SessionEndedEvent

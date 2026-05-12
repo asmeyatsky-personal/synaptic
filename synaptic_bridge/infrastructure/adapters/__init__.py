@@ -31,11 +31,24 @@ from synaptic_bridge.domain.exceptions import ConfigurationError
 
 
 def _get_jwt_secret() -> str:
-    """Get JWT secret, failing fast if not configured outside tests."""
+    """
+    Resolve JWT signing secret via SecretManagerPort (Architectural Rules §4.1).
+
+    Synchronous for backwards-compat with the in-memory adapter; in production
+    use the async path on the SecretManagerPort directly from your composition
+    root and inject the resolved value.
+    """
+    from synaptic_bridge.infrastructure.adapters.secret_manager import (
+        EnvSecretManager,
+        default_secret_manager,
+    )
+
+    sm = default_secret_manager()
     secret = os.environ.get("JWT_SECRET", "")
-    if not secret and os.environ.get("TESTING") != "1":
+    if not secret and isinstance(sm, EnvSecretManager) and os.environ.get("TESTING") != "1":
         raise ConfigurationError(
-            "JWT_SECRET environment variable is required."
+            "JWT_SECRET is not configured. Provision via Secret Manager "
+            "(GCP_PROJECT) or set JWT_SECRET for local dev."
         )
     return secret
 

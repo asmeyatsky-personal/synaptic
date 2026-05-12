@@ -1,14 +1,31 @@
 """
-SIEM Connectors
+Layer: infrastructure
+Ports: AuditLogPort sink (downstream of WORM audit, not a port directly).
+MCP integration: none.
+Stack: canonical.
 
-Following PRD: SIEM/Logging Connectors - Splunk, Datadog, GCP Cloud Logging, Azure Sentinel.
+SIEM connectors — Splunk, Datadog, GCP Logging, Azure Sentinel. Every send
+is wrapped with an explicit timeout and a per-vendor circuit breaker
+(Architectural Rules §3.6, §4.4).
 """
 
+import asyncio
 import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import UTC, datetime
+
+from synaptic_bridge.infrastructure.services.circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerError,
+    azure_circuit_breaker,
+    datadog_circuit_breaker,
+    gcp_circuit_breaker,
+    splunk_circuit_breaker,
+)
+
+SIEM_SEND_TIMEOUT_SECONDS = float(os.environ.get("SIEM_SEND_TIMEOUT_SECONDS", "5.0"))
 
 
 @dataclass
@@ -41,8 +58,44 @@ class SIEMConnector(ABC):
     def name(self) -> str:
         pass
 
-    @abstractmethod
+    @property
+    def circuit_breaker(self) -> CircuitBreaker | None:
+        """Override per-vendor to enable failure isolation (§4.4)."""
+        return None
+
     async def send(self, event: SIEMEvent) -> bool:
+        """
+        Public entry: wrap _do_send with timeout + circuit breaker.
+        Subclasses override _do_send, not send.
+        """
+        cb = self.circuit_breaker
+        if cb is not None:
+            await cb._maybe_transition_from_open()
+            if cb.is_open:
+                raise CircuitBreakerError(cb.name, cb.time_until_retry())
+        try:
+            result = await asyncio.wait_for(
+                self._do_send(event), timeout=SIEM_SEND_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            if cb is not None:
+                await cb.record_failure()
+            self.logger.warning(
+                "SIEM send timed out after %.1fs (%s)",
+                SIEM_SEND_TIMEOUT_SECONDS,
+                self.name,
+            )
+            return False
+        except Exception:
+            if cb is not None:
+                await cb.record_failure()
+            raise
+        if cb is not None:
+            await cb.record_success()
+        return result
+
+    @abstractmethod
+    async def _do_send(self, event: SIEMEvent) -> bool:
         pass
 
     async def send_batch(self, events: list[SIEMEvent]) -> bool:
@@ -86,7 +139,11 @@ class SplunkConnector(SIEMConnector):
     def name(self) -> str:
         return "splunk"
 
-    async def send(self, event: SIEMEvent) -> bool:
+    @property
+    def circuit_breaker(self) -> CircuitBreaker:
+        return splunk_circuit_breaker
+
+    async def _do_send(self, event: SIEMEvent) -> bool:
         """Send event to Splunk HEC."""
         if not self.endpoint:
             self.logger.warning("Splunk endpoint not configured, skipping")
@@ -123,7 +180,11 @@ class DatadogConnector(SIEMConnector):
     def name(self) -> str:
         return "datadog"
 
-    async def send(self, event: SIEMEvent) -> bool:
+    @property
+    def circuit_breaker(self) -> CircuitBreaker:
+        return datadog_circuit_breaker
+
+    async def _do_send(self, event: SIEMEvent) -> bool:
         """Send event to Datadog."""
         if not self.endpoint:
             self.logger.warning("Datadog endpoint not configured, skipping")
@@ -153,7 +214,11 @@ class GCPLoggingConnector(SIEMConnector):
     def name(self) -> str:
         return "gcp_logging"
 
-    async def send(self, event: SIEMEvent) -> bool:
+    @property
+    def circuit_breaker(self) -> CircuitBreaker:
+        return gcp_circuit_breaker
+
+    async def _do_send(self, event: SIEMEvent) -> bool:
         """Send event to GCP Cloud Logging."""
         if not self.endpoint:
             self.logger.warning("GCP Logging not configured, skipping")
@@ -202,7 +267,11 @@ class AzureSentinelConnector(SIEMConnector):
     def name(self) -> str:
         return "azure_sentinel"
 
-    async def send(self, event: SIEMEvent) -> bool:
+    @property
+    def circuit_breaker(self) -> CircuitBreaker:
+        return azure_circuit_breaker
+
+    async def _do_send(self, event: SIEMEvent) -> bool:
         """Send event to Azure Sentinel."""
         if not self.endpoint:
             self.logger.warning("Azure Sentinel not configured, skipping")

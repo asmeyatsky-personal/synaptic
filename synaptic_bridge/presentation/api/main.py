@@ -545,10 +545,12 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-from synaptic_bridge.presentation.portal.routes import router as portal_router
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 import os
+
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from synaptic_bridge.presentation.portal.routes import router as portal_router
 
 portal_static_path = os.path.join(os.path.dirname(__file__), "..", "portal", "static")
 portal_html_path = os.path.join(os.path.dirname(__file__), "..", "portal", "index.html")

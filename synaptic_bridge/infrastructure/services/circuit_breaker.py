@@ -31,7 +31,7 @@ class CircuitBreakerError(Exception):
     """Raised when circuit breaker is open and request is rejected."""
 
     def __init__(self, service_name: str, retry_after: float):
-        self.service_name = service_name
+        self.name = service_name
         self.retry_after = retry_after
         super().__init__(
             f"Circuit breaker is open for '{service_name}'. Retry after {retry_after:.1f} seconds."
@@ -164,7 +164,7 @@ class CircuitBreaker:
             await self._maybe_transition_from_open()
 
             if self._state == CircuitState.OPEN:
-                raise CircuitBreakerError(self.service_name, self.time_until_retry())
+                raise CircuitBreakerError(self.name, self.time_until_retry())
 
             try:
                 result = await func(*args, **kwargs)
@@ -177,7 +177,7 @@ class CircuitBreaker:
         @wraps(func)
         def sync_wrapper(*args, **kwargs) -> Any:
             if self._state == CircuitState.OPEN:
-                raise CircuitBreakerError(self.service_name, self.time_until_retry())
+                raise CircuitBreakerError(self.name, self.time_until_retry())
 
             try:
                 result = func(*args, **kwargs)

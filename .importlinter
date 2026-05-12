@@ -1,0 +1,42 @@
+[importlinter]
+root_package = synaptic_bridge
+include_external_packages = True
+
+[importlinter:contract:layers]
+name = Layer direction (Architectural Rules 2026 §2)
+type = layers
+layers =
+    synaptic_bridge.presentation
+    synaptic_bridge.infrastructure
+    synaptic_bridge.application
+    synaptic_bridge.domain
+
+[importlinter:contract:domain-independence]
+name = Domain forbids SDKs and frameworks (§2, §7.3)
+type = forbidden
+source_modules =
+    synaptic_bridge.domain
+forbidden_modules =
+    fastapi
+    pydantic
+    uvicorn
+    jwt
+    duckdb
+    google
+    httpx
+    opentelemetry
+    synaptic_bridge.infrastructure
+    synaptic_bridge.application
+    synaptic_bridge.presentation
+
+[importlinter:contract:application-independence]
+name = Application imports only domain (§2)
+type = forbidden
+source_modules =
+    synaptic_bridge.application
+forbidden_modules =
+    synaptic_bridge.infrastructure
+    synaptic_bridge.presentation
+    fastapi
+    duckdb
+    jwt

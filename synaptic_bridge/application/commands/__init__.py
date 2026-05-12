@@ -1,8 +1,12 @@
 """
-Application Commands
+Layer: application
+Ports: ToolRegistryPort, ExecutionPort, AuditLogPort, PolicyEnginePort,
+       IntentClassifierPort, CorrectionStorePort
+MCP integration: command handlers are invoked from MCP tool handlers in
+       infrastructure/mcp_servers (writes = tools).
+Stack: canonical (Python).
 
-Command handlers for SynapticBridge operations.
-Following CQRS pattern.
+CQRS command handlers. Imports only from domain.
 """
 
 import uuid
@@ -25,6 +29,11 @@ from synaptic_bridge.domain.entities import (
     PolicyScope,
     ToolManifest,
 )
+from synaptic_bridge.domain.events import (
+    CLEInterceptionEvent,
+    PolicyViolationEvent,
+    ToolCalledEvent,
+)
 from synaptic_bridge.domain.exceptions import (
     PolicyViolationError,
     SessionExpiredError,
@@ -41,6 +50,13 @@ from synaptic_bridge.domain.ports import (
 )
 
 
+async def _flush_domain_events(audit_log: AuditLogPort, aggregate: Any) -> None:
+    """Audit every domain event raised by an aggregate (§4.3, append-only)."""
+    events = getattr(aggregate, "domain_events", ()) or ()
+    for event in events:
+        await audit_log.write(event)
+
+
 @dataclass
 class CreateSessionCommand:
     agent_id: str
@@ -53,9 +69,7 @@ class CreateSessionCommand:
         audit_log: AuditLogPort,
     ) -> ExecutionSession:
         session = await execution_port.create_session(self.agent_id, self.created_by)
-
-        await audit_log.write(session.domain_events[0] if session.domain_events else None)
-
+        await _flush_domain_events(audit_log, session)
         return session
 
 
@@ -102,8 +116,6 @@ class ExecuteToolCommand:
             if policy.scope in (PolicyScope.TOOL, PolicyScope.SESSION):
                 allowed = await policy_engine.evaluate(policy, policy_context)
                 if not allowed:
-                    from synaptic_bridge.domain.events import PolicyViolationEvent
-
                     violation_event = PolicyViolationEvent(
                         aggregate_id=f"viol_{uuid.uuid4().hex[:8]}",
                         session_id=self.session_id,
@@ -118,7 +130,6 @@ class ExecuteToolCommand:
                         f"Policy {policy.name} denied execution",
                     )
 
-        # CLE consultation: check learned patterns for a better tool
         was_corrected = False
         correction_confidence = 0.0
         effective_tool = self.tool_name
@@ -140,70 +151,53 @@ class ExecuteToolCommand:
                     suggested_tool = best_pattern.corrected_tools[0]
 
                     if shadow_mode:
-                        # Shadow mode: log but don't redirect
-                        from synaptic_bridge.domain.events import CLEInterceptionEvent
-
-                        cle_event = CLEInterceptionEvent(
-                            aggregate_id=f"cle_{uuid.uuid4().hex[:8]}",
-                            original_tool=self.tool_name,
-                            suggested_tool=suggested_tool,
-                            confidence=best_similarity,
-                            pattern_id=best_pattern.pattern_id,
-                            shadow_mode=True,
-                            applied=False,
+                        await audit_log.write(
+                            CLEInterceptionEvent(
+                                aggregate_id=f"cle_{uuid.uuid4().hex[:8]}",
+                                original_tool=self.tool_name,
+                                suggested_tool=suggested_tool,
+                                confidence=best_similarity,
+                                pattern_id=best_pattern.pattern_id,
+                                shadow_mode=True,
+                                applied=False,
+                            )
                         )
-                        await audit_log.write(cle_event)
                     else:
-                        # Active mode: verify corrected tool exists, then redirect
                         corrected_manifest = await tool_registry.get(suggested_tool)
-                        if corrected_manifest is not None:
+                        applied = corrected_manifest is not None
+                        if applied:
                             effective_tool = suggested_tool
                             was_corrected = True
                             correction_confidence = best_similarity
-
-                            from synaptic_bridge.domain.events import CLEInterceptionEvent
-
-                            cle_event = CLEInterceptionEvent(
+                        await audit_log.write(
+                            CLEInterceptionEvent(
                                 aggregate_id=f"cle_{uuid.uuid4().hex[:8]}",
                                 original_tool=self.tool_name,
                                 suggested_tool=suggested_tool,
                                 confidence=best_similarity,
                                 pattern_id=best_pattern.pattern_id,
                                 shadow_mode=False,
-                                applied=True,
+                                applied=applied,
                             )
-                            await audit_log.write(cle_event)
-                        else:
-                            # Corrected tool not in registry, fall back to original
-                            from synaptic_bridge.domain.events import CLEInterceptionEvent
-
-                            cle_event = CLEInterceptionEvent(
-                                aggregate_id=f"cle_{uuid.uuid4().hex[:8]}",
-                                original_tool=self.tool_name,
-                                suggested_tool=suggested_tool,
-                                confidence=best_similarity,
-                                pattern_id=best_pattern.pattern_id,
-                                shadow_mode=False,
-                                applied=False,
-                            )
-                            await audit_log.write(cle_event)
+                        )
             except Exception:
-                # CLE failure must never block execution
+                # CLE failure must never block execution. Failure is logged by
+                # the underlying port's observability hook; swallowing here is
+                # an explicit boundary contract.
                 pass
 
         result = await execution_port.execute_tool(session, effective_tool, self.parameters)
 
-        from synaptic_bridge.domain.events import ToolCalledEvent
-
-        tool_event = ToolCalledEvent(
-            aggregate_id=f"call_{uuid.uuid4().hex[:12]}",
-            session_id=self.session_id,
-            agent_id=session.agent_id,
-            tool_name=effective_tool,
-            was_corrected=was_corrected,
-            correction_confidence=correction_confidence,
+        await audit_log.write(
+            ToolCalledEvent(
+                aggregate_id=f"call_{uuid.uuid4().hex[:12]}",
+                session_id=self.session_id,
+                agent_id=session.agent_id,
+                tool_name=effective_tool,
+                was_corrected=was_corrected,
+                correction_confidence=correction_confidence,
+            )
         )
-        await audit_log.write(tool_event)
 
         return result
 
